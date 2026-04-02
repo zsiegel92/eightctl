@@ -17,7 +17,7 @@ Eight Sleep Pod power/control + data-export CLI, written in Go. Targets macOS/Li
 - Permissions check warns if config is more permissive than `0600`.
 
 ## CLI Surface (implemented)
-Core: `on`, `off`, `temp <level>`, `status`, `whoami`, `version`.
+Core: `on`, `off`, `temp <level>`, `temp smart status|set`, `status`, `whoami`, `version`.
 
 Schedules & daemon:
 - `schedule list|create|update|delete` (cloud temperature schedules)

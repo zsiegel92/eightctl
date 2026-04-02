@@ -13,10 +13,12 @@ import (
 )
 
 var tempCmd = &cobra.Command{
-	Use:   "temp <value>",
-	Short: "Set pod temperature (68F, 20C, or raw API level -100..100)",
+	Use:   "temp [value]",
+	Short: "Set pod temperature or manage smart sleep-stage temperatures",
 	Long: strings.TrimSpace(`
 Set pod temperature using either degrees (e.g. 68F, 20C) or the raw Eight Sleep API level range -100..100.
+
+Use "eightctl temp smart" to inspect or update the app-style bedtime/night/dawn targets.
 
 Note: the Eight Sleep app displays a coarser UI scale of roughly -10..10.
 In practice, raw API levels appear to map in steps of 10:
@@ -29,6 +31,9 @@ eightctl temp 68F
 eightctl temp 20C
 eightctl temp 20
 eightctl temp -- -20
+eightctl temp smart status
+eightctl temp smart set bedtime 20
+eightctl temp smart set dawn -- -20
 `),
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

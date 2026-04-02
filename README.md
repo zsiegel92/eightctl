@@ -27,12 +27,18 @@ EIGHTCTL_EMAIL=you@example.com EIGHTCTL_PASSWORD=your-password eightctl status
 # set temperature level (-100..100)
 eightctl temp 20
 
+# inspect or set app-style bedtime/night/dawn temperatures
+go run ./cmd/eightctl temp smart status
+go run ./cmd/eightctl temp smart set bedtime -- '-36'
+go run ./cmd/eightctl temp smart set night -- '-30'
+go run ./cmd/eightctl temp smart set dawn -- '-20'
+
 # run daemon with your YAML schedule (see docs/example-schedule.yaml)
 eightctl daemon --dry-run
 ```
 
 ## Command Surface
-- **Power & temp:** `on`, `off`, `temp <level>`, `status`
+- **Power & temp:** `on`, `off`, `temp <level>`, `temp smart status|set`, `status`
 - **Schedules & daemon:** `schedule list|create|update|delete|next`, `daemon`
 - **Alarms:** `alarm list|create|update|delete|snooze|dismiss|dismiss-all|vibration-test`
 - **Temperature modes:** `tempmode nap on|off|extend|status`, `tempmode hotflash on|off|status`, `tempmode events`
