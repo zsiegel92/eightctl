@@ -31,17 +31,30 @@ var alarmListCmd = &cobra.Command{
 		}
 		rows := make([]map[string]any, 0, len(alarms))
 		for _, a := range alarms {
+			sound := ""
+			if a.Sound != nil {
+				sound = *a.Sound
+			}
 			rows = append(rows, map[string]any{
-				"id":        a.ID,
-				"time":      a.Time,
-				"enabled":   a.Enabled,
-				"days":      a.DaysOfWeek,
-				"vibration": a.Vibration,
-				"sound":     a.Sound,
+				"id":              a.ID,
+				"time":            a.Time,
+				"state":           a.State,
+				"next":            a.Next,
+				"enabled":         a.Enabled,
+				"dismissed_until": a.DismissedUntil,
+				"snoozed_until":   a.SnoozedUntil,
+				"days":            a.DaysOfWeek,
+				"vibration":       a.Vibration,
+				"sound":           sound,
 			})
 		}
-		rows = output.FilterFields(rows, viper.GetStringSlice("fields"))
-		return output.Print(output.Format(viper.GetString("output")), []string{"id", "time", "enabled", "days", "vibration", "sound"}, rows)
+		fields := viper.GetStringSlice("fields")
+		rows = output.FilterFields(rows, fields)
+		headers := fields
+		if len(headers) == 0 {
+			headers = []string{"id", "time", "state", "next", "enabled", "dismissed_until", "snoozed_until", "days", "vibration"}
+		}
+		return output.Print(output.Format(viper.GetString("output")), headers, rows)
 	},
 }
 

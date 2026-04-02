@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -23,6 +25,8 @@ const (
 	defaultClientID     = "0894c7f33bb94800a03f1f4df13a4f38"
 	defaultClientSecret = "f0954a3ed5763ba3d06834c73731a32f15f168f47d4f164751275def86db0c76"
 )
+
+var appBaseURL = "https://app-api.8slp.net"
 
 // Client represents Eight Sleep API client.
 type Client struct {
@@ -116,19 +120,20 @@ func (c *Client) EnsureDeviceID(ctx context.Context) (string, error) {
 }
 
 func (c *Client) authTokenEndpoint(ctx context.Context) error {
-	payload := map[string]string{
-		"grant_type":    "password",
-		"username":      c.Email,
-		"password":      c.Password,
-		"client_id":     "sleep-client",
-		"client_secret": "",
+	form := url.Values{
+		"grant_type":    {`password`},
+		"username":      {c.Email},
+		"password":      {c.Password},
+		"client_id":     {c.ClientID},
+		"client_secret": {c.ClientSecret},
 	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authURL, bytes.NewReader([]byte(form.Encode())))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Android App")
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -136,8 +141,13 @@ func (c *Client) authTokenEndpoint(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		log.Debug("token auth failed", "status", resp.Status, "headers", resp.Header, "body", string(b))
+		r, err := decodeBody(resp)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		b, _ := io.ReadAll(r)
+		log.Debug("token auth failed", "status", resp.Status, "headers", resp.Header, "body", redactSecrets(string(b)))
 		return fmt.Errorf("token auth failed: %s", resp.Status)
 	}
 
@@ -146,7 +156,12 @@ func (c *Client) authTokenEndpoint(ctx context.Context) error {
 		ExpiresIn   int    `json:"expires_in"`
 		UserID      string `json:"userId"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	r, err := decodeBody(resp)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	if err := json.NewDecoder(r).Decode(&res); err != nil {
 		return err
 	}
 	if res.AccessToken == "" {
@@ -168,6 +183,21 @@ func (c *Client) authTokenEndpoint(ctx context.Context) error {
 	return nil
 }
 
+func redactSecrets(s string) string {
+	replacer := strings.NewReplacer(
+		`"password": "`, `"password": "[redacted]`,
+		`\"password\\": \\"`, `\"password\\": \\"[redacted]`,
+	)
+	return replacer.Replace(s)
+}
+
+func decodeBody(resp *http.Response) (io.ReadCloser, error) {
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		return gzip.NewReader(resp.Body)
+	}
+	return resp.Body, nil
+}
+
 func (c *Client) authLegacyLogin(ctx context.Context) error {
 	payload := map[string]string{
 		"email":    c.Email,
@@ -182,14 +212,18 @@ func (c *Client) authLegacyLogin(ctx context.Context) error {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("User-Agent", "okhttp/4.9.3")
-	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
+		r, err := decodeBody(resp)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		b, _ := io.ReadAll(r)
 		log.Debug("legacy login failed", "status", resp.Status, "headers", resp.Header, "body", string(b))
 		return fmt.Errorf("login failed: %s", string(b))
 	}
@@ -200,7 +234,12 @@ func (c *Client) authLegacyLogin(ctx context.Context) error {
 			ExpirationDate string `json:"expirationDate"`
 		} `json:"session"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	r, err := decodeBody(resp)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	if err := json.NewDecoder(r).Decode(&res); err != nil {
 		return err
 	}
 	if res.Session.Token == "" {
@@ -257,6 +296,10 @@ func (c *Client) requireUser(ctx context.Context) error {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+	return c.doWithRetry(ctx, method, path, query, body, out, 3)
+}
+
+func (c *Client) doWithRetry(ctx context.Context, method, path string, query url.Values, body any, out any, retriesLeft int) error {
 	if err := c.ensureToken(ctx); err != nil {
 		return err
 	}
@@ -268,9 +311,16 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		rdr = bytes.NewReader(b)
 	}
-	u := c.BaseURL + path
+	u := path
+	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+		u = c.BaseURL + path
+	}
 	if len(query) > 0 {
-		u += "?" + query.Encode()
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		u += sep + query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
 	if err != nil {
@@ -281,7 +331,6 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("User-Agent", "okhttp/4.9.3")
-	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -289,23 +338,39 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
+		if retriesLeft <= 0 {
+			return fmt.Errorf("api %s %s: too many requests (rate limited)", method, path)
+		}
 		time.Sleep(2 * time.Second)
-		return c.do(ctx, method, path, query, body, out)
+		return c.doWithRetry(ctx, method, path, query, body, out, retriesLeft-1)
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
+		if retriesLeft <= 0 {
+			return fmt.Errorf("api %s %s: unauthorized", method, path)
+		}
 		c.token = ""
 		_ = tokencache.Clear(c.Identity())
 		if err := c.ensureToken(ctx); err != nil {
 			return err
 		}
-		return c.do(ctx, method, path, query, body, out)
+		return c.doWithRetry(ctx, method, path, query, body, out, retriesLeft-1)
 	}
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
+		r, err := decodeBody(resp)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		b, _ := io.ReadAll(r)
 		return fmt.Errorf("api %s %s: %s", method, path, string(b))
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		r, err := decodeBody(resp)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		return json.NewDecoder(r).Decode(out)
 	}
 	return nil
 }
