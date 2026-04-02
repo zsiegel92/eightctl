@@ -58,6 +58,37 @@ var alarmListCmd = &cobra.Command{
 	},
 }
 
+var alarmToggleCmd = &cobra.Command{
+	Use:   "toggle <selector>",
+	Short: "Toggle a one-off alarm by next, time, or id",
+	Long: strings.TrimSpace(`
+Toggle a one-off alarm on or off.
+
+Selector can be:
+- next
+- exact alarm time HH:MM or HH:MM:SS
+- full alarm id
+`),
+	Example: strings.TrimSpace(`
+eightctl alarm toggle next
+eightctl alarm toggle 08:00
+eightctl alarm toggle 633c6f69-2b51-4d72-bb61-5dee86d7a3ef
+`),
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := requireAuthFields(); err != nil {
+			return err
+		}
+		cl := client.New(viper.GetString("email"), viper.GetString("password"), viper.GetString("user_id"), viper.GetString("client_id"), viper.GetString("client_secret"))
+		alarm, err := cl.ToggleAlarm(context.Background(), args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("toggled alarm %s (%s) -> enabled=%t state=%s\n", alarm.ID, alarm.Time, alarm.Enabled, alarm.State)
+		return nil
+	},
+}
+
 var alarmCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create an alarm",
@@ -172,7 +203,7 @@ func init() {
 	viper.BindPFlag("sound", alarmUpdateCmd.Flags().Lookup("sound"))
 
 	// add subcommands
-	alarmCmd.AddCommand(alarmListCmd, alarmCreateCmd, alarmUpdateCmd, alarmDeleteCmd, alarmSnoozeCmd, alarmDismissCmd, alarmDismissAllCmd, alarmVibeCmd)
+	alarmCmd.AddCommand(alarmListCmd, alarmToggleCmd, alarmCreateCmd, alarmUpdateCmd, alarmDeleteCmd, alarmSnoozeCmd, alarmDismissCmd, alarmDismissAllCmd, alarmVibeCmd)
 }
 
 // snooze

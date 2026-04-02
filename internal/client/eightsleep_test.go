@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -162,5 +164,60 @@ func TestTurnOnOffUsesTemperatureStateEndpoint(t *testing.T) {
 	}
 	if got := strings.Join(powerStates, ","); got != "smart,off" {
 		t.Fatalf("expected smart/off calls, got %q", got)
+	}
+}
+
+func TestToggleAlarmByTimeUpdatesOneOffAlarm(t *testing.T) {
+	enabled := false
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/users/uid-123/routines", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"settings":{"routines":[],"oneOffAlarms":[{"alarmId":"alarm-1","time":"07:15:00","enabled":%t,"settings":{"vibration":{"enabled":false,"powerLevel":50,"pattern":"INTENSE"},"thermal":{"enabled":true,"level":40}},"dismissedUntil":"1970-01-01T00:00:00Z","snoozedUntil":"1970-01-01T00:00:00Z"}]},"state":{"status":"None","nextAlarm":{}}}`, enabled)))
+		case http.MethodPut:
+			if got := r.URL.Query().Get("ignoreDeviceErrors"); got != "false" {
+				t.Fatalf("ignoreDeviceErrors query = %q", got)
+			}
+			var body struct {
+				OneOffAlarms []struct {
+					AlarmID string `json:"alarmId"`
+					Enabled bool   `json:"enabled"`
+				} `json:"oneOffAlarms"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if len(body.OneOffAlarms) != 1 || body.OneOffAlarms[0].AlarmID != "alarm-1" {
+				t.Fatalf("unexpected body: %+v", body)
+			}
+			enabled = body.OneOffAlarms[0].Enabled
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New("email", "pass", "uid-123", "", "")
+	c.token = "t"
+	c.tokenExp = time.Now().Add(time.Hour)
+	c.HTTP = srv.Client()
+
+	prevAppBaseURL := appBaseURL
+	appBaseURL = srv.URL
+	defer func() { appBaseURL = prevAppBaseURL }()
+
+	alarm, err := c.ToggleAlarm(context.Background(), "07:15")
+	if err != nil {
+		t.Fatalf("toggle alarm: %v", err)
+	}
+	if !enabled {
+		t.Fatalf("expected toggle PUT to enable alarm")
+	}
+	if !alarm.Enabled || alarm.State != "enabled" {
+		t.Fatalf("unexpected updated alarm %+v", alarm)
 	}
 }
