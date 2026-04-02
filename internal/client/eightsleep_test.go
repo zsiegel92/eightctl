@@ -2,8 +2,10 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +31,19 @@ func mockServer(t *testing.T) (*httptest.Server, *Client) {
 			return
 		}
 		http.NotFound(w, r)
+	})
+
+	mux.HandleFunc("/v1/users/uid-123/temperature", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+		if !strings.Contains(bodyStr, `"currentState"`) {
+			t.Fatalf("unexpected body: %s", string(body))
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -99,5 +114,53 @@ func Test429Retry(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 2*time.Second {
 		t.Fatalf("expected backoff, got %v", elapsed)
+	}
+}
+
+func TestTurnOnOffUsesTemperatureStateEndpoint(t *testing.T) {
+	powerStates := []string{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"user":{"userId":"uid-123","currentDevice":{"id":"dev-1"}}}`))
+	})
+	mux.HandleFunc("/v1/users/uid-123/temperature", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+		switch {
+		case strings.Contains(bodyStr, `"type":"smart"`):
+			powerStates = append(powerStates, "smart")
+		case strings.Contains(bodyStr, `"type":"off"`):
+			powerStates = append(powerStates, "off")
+		default:
+			t.Fatalf("unexpected power state body: %s", bodyStr)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New("email", "pass", "", "", "")
+	c.BaseURL = srv.URL
+	c.token = "t"
+	c.tokenExp = time.Now().Add(time.Hour)
+	c.HTTP = srv.Client()
+
+	prevAppBaseURL := appBaseURL
+	appBaseURL = srv.URL
+	defer func() { appBaseURL = prevAppBaseURL }()
+
+	if err := c.TurnOn(context.Background()); err != nil {
+		t.Fatalf("turn on: %v", err)
+	}
+	if err := c.TurnOff(context.Background()); err != nil {
+		t.Fatalf("turn off: %v", err)
+	}
+	if got := strings.Join(powerStates, ","); got != "smart,off" {
+		t.Fatalf("expected smart/off calls, got %q", got)
 	}
 }

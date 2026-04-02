@@ -389,9 +389,17 @@ func (c *Client) setPower(ctx context.Context, on bool) error {
 	if err := c.requireUser(ctx); err != nil {
 		return err
 	}
-	path := fmt.Sprintf("/users/%s/devices/power", c.UserID)
-	body := map[string]bool{"on": on}
-	return c.do(ctx, http.MethodPost, path, nil, body, nil)
+	path := fmt.Sprintf("%s/v1/users/%s/temperature", appBaseURL, c.UserID)
+	stateType := "off"
+	if on {
+		stateType = "smart"
+	}
+	body := map[string]any{
+		"currentState": map[string]string{
+			"type": stateType,
+		},
+	}
+	return c.do(ctx, http.MethodPut, path, nil, body, nil)
 }
 
 func (c *Client) Identity() tokencache.Identity {
